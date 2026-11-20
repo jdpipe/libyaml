@@ -256,6 +256,23 @@ yaml_parser_load_nodes(yaml_parser_t *parser, struct loader_ctx *ctx)
     return 1;
 }
 
+/* Find the first entry whose name compares >= anchor. Offsets survive PUSH. */
+static size_t
+yaml_parser_anchor_position(yaml_parser_t *parser, const yaml_char_t *anchor)
+{
+    size_t low = 0;
+    size_t high = (size_t)(parser->aliases.top - parser->aliases.start);
+    while (low < high) {
+        size_t mid = low + (high - low) / 2;
+        if (strcmp((const char *)parser->aliases.start[mid].anchor,
+                   (const char *)anchor) < 0)
+            low = mid + 1;
+        else
+            high = mid;
+    }
+    return low;
+}
+
 /*
  * Add an anchor.
  */
@@ -265,7 +282,8 @@ yaml_parser_register_anchor(yaml_parser_t *parser,
         int index, yaml_char_t *anchor)
 {
     yaml_alias_data_t data;
-    yaml_alias_data_t *alias_data;
+    size_t pos;
+    size_t count = (size_t)(parser->aliases.top - parser->aliases.start);
 
     if (!anchor) return 1;
 
@@ -273,19 +291,24 @@ yaml_parser_register_anchor(yaml_parser_t *parser,
     data.index = index;
     data.mark = parser->document->nodes.start[index-1].start_mark;
 
-    for (alias_data = parser->aliases.start;
-            alias_data != parser->aliases.top; alias_data ++) {
-        if (strcmp((char *)alias_data->anchor, (char *)anchor) == 0) {
-            yaml_free(anchor);
-            return yaml_parser_set_composer_error_context(parser,
-                    "found duplicate anchor; first occurrence",
-                    alias_data->mark, "second occurrence", data.mark);
-        }
+    pos = yaml_parser_anchor_position(parser, anchor);
+    if (pos < count && strcmp((const char *)parser->aliases.start[pos].anchor,
+                              (const char *)anchor) == 0) {
+        yaml_free(anchor);
+        return yaml_parser_set_composer_error_context(parser,
+                "found duplicate anchor; first occurrence",
+                parser->aliases.start[pos].mark, "second occurrence", data.mark);
     }
 
     if (!PUSH(parser, parser->aliases, data)) {
         yaml_free(anchor);
         return 0;
+    }
+
+    if (pos < count) {
+        memmove(parser->aliases.start + pos + 1, parser->aliases.start + pos,
+                (count - pos) * sizeof(data));
+        parser->aliases.start[pos] = data;
     }
 
     return 1;
@@ -352,14 +375,14 @@ yaml_parser_load_alias(yaml_parser_t *parser, yaml_event_t *event,
         struct loader_ctx *ctx)
 {
     yaml_char_t *anchor = event->data.alias.anchor;
-    yaml_alias_data_t *alias_data;
+    size_t pos;
+    size_t count = (size_t)(parser->aliases.top - parser->aliases.start);
 
-    for (alias_data = parser->aliases.start;
-            alias_data != parser->aliases.top; alias_data ++) {
-        if (strcmp((char *)alias_data->anchor, (char *)anchor) == 0) {
-            yaml_free(anchor);
-            return yaml_parser_load_node_add(parser, ctx, alias_data->index);
-        }
+    pos = yaml_parser_anchor_position(parser, anchor);
+    if (pos < count && strcmp((const char *)parser->aliases.start[pos].anchor,
+                              (const char *)anchor) == 0) {
+        yaml_free(anchor);
+        return yaml_parser_load_node_add(parser, ctx, parser->aliases.start[pos].index);
     }
 
     yaml_free(anchor);
